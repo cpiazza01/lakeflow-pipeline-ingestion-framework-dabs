@@ -3,9 +3,9 @@
 #
 # USAGE:
 #   Copy this file to pipeline_config.yaml, fill in your values, then run:
-#     python generate.py --config pipeline_config.yaml --env dev
+#     python lakeflow-generate --config pipeline_config.yaml --env dev
 #
-# generate.py substitutes ${env} in all string values before parsing,
+# lakeflow-generate substitutes ${env} in all string values before parsing,
 # so you can use ${env} in S3 paths, catalog names, etc.
 # ==============================================================================
 

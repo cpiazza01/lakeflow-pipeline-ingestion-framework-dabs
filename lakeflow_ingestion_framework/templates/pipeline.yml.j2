@@ -1,6 +1,6 @@
 resources:
   pipelines:
-    dlt_pipeline:
+    lakeflow_pipeline:
       name: {{ pipeline_name }}
       catalog: ${var.catalog}
       schema: ${var.pipeline_schema}
@@ -22,7 +22,7 @@ resources:
             - {{ email }}
 {% endfor %}
           alerts:
-{% for alert in dlt_alerts %}
+{% for alert in pipeline_alerts %}
             - {{ alert }}
 {% endfor %}
 {% if pipeline_access_group %}

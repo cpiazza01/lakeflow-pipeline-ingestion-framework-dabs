@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Repo Is
 
-A **pip-installable Python package** (`dlt-ingestion-framework`) that generates and deploys Databricks Delta Live Tables (DLT) pipelines from a declarative YAML configuration using **Databricks Asset Bundles (DABs)**. Consumers install the package from GitHub in their own project repos and run the `dlt-generate` CLI to produce their bundle artifacts.
+A **pip-installable Python package** (`lakeflow-pipeline-ingestion-framework`) that generates and deploys Databricks Lakeflow Declarative Pipelines from a declarative YAML configuration using **Databricks Asset Bundles (DABs)**. Consumers install the package from GitHub in their own project repos and run the `lakeflow-generate` CLI to produce their bundle artifacts.
 
 This is not a Terraform module. There is no `terraform plan` or `terraform apply`.
 
@@ -12,14 +12,14 @@ This is not a Terraform module. There is no `terraform plan` or `terraform apply
 
 | File/Dir | Role |
 |---|---|
-| [dlt_ingestion_framework/cli.py](dlt_ingestion_framework/cli.py) | CLI entry point (`dlt-generate`): validation, preprocessing, template rendering |
-| [dlt_ingestion_framework/templates/](dlt_ingestion_framework/templates/) | Jinja2 templates bundled with the package |
-| [dlt_ingestion_framework/templates/dlt_pipeline.sql.j2](dlt_ingestion_framework/templates/dlt_pipeline.sql.j2) | Renders one SQL file per pipeline entry (Bronze → Cleaned View → Quarantine → Silver). Receives a single `pipe` dict — the per-pipeline loop lives in `cli.py`. |
-| [dlt_ingestion_framework/templates/tagging_script.sql.j2](dlt_ingestion_framework/templates/tagging_script.sql.j2) | Renders the `ALTER TABLE SET TAGS` / column mask / row filter script |
-| [dlt_ingestion_framework/templates/expectations_report.sql.j2](dlt_ingestion_framework/templates/expectations_report.sql.j2) | Renders the data quality query against the DLT event log |
-| [dlt_ingestion_framework/templates/pipeline.yml.j2](dlt_ingestion_framework/templates/pipeline.yml.j2) | Renders the DABs `resources/pipeline.yml` resource file |
-| [dlt_ingestion_framework/templates/job.yml.j2](dlt_ingestion_framework/templates/job.yml.j2) | Renders the DABs `resources/job.yml` resource file (handles conditional tasks) |
-| [pyproject.toml](pyproject.toml) | Package metadata, dependencies, and `dlt-generate` CLI entrypoint |
+| [lakeflow_ingestion_framework/cli.py](lakeflow_ingestion_framework/cli.py) | CLI entry point (`lakeflow-generate`): validation, preprocessing, template rendering |
+| [lakeflow_ingestion_framework/templates/](lakeflow_ingestion_framework/templates/) | Jinja2 templates bundled with the package |
+| [lakeflow_ingestion_framework/templates/lakeflow_pipeline.sql.j2](lakeflow_ingestion_framework/templates/lakeflow_pipeline.sql.j2) | Renders one SQL file per pipeline entry (Bronze → Cleaned View → Quarantine → Silver). Receives a single `pipe` dict — the per-pipeline loop lives in `cli.py`. |
+| [lakeflow_ingestion_framework/templates/tagging_script.sql.j2](lakeflow_ingestion_framework/templates/tagging_script.sql.j2) | Renders the `ALTER TABLE SET TAGS` / column mask / row filter script |
+| [lakeflow_ingestion_framework/templates/expectations_report.sql.j2](lakeflow_ingestion_framework/templates/expectations_report.sql.j2) | Renders the data quality query against the pipeline event log |
+| [lakeflow_ingestion_framework/templates/pipeline.yml.j2](lakeflow_ingestion_framework/templates/pipeline.yml.j2) | Renders the DABs `resources/pipeline.yml` resource file |
+| [lakeflow_ingestion_framework/templates/job.yml.j2](lakeflow_ingestion_framework/templates/job.yml.j2) | Renders the DABs `resources/job.yml` resource file (handles conditional tasks) |
+| [pyproject.toml](pyproject.toml) | Package metadata, dependencies, and `lakeflow-generate` CLI entrypoint |
 | [databricks.example.yml](databricks.example.yml) | Reference `databricks.yml` for consumers to copy into their project repo |
 | [pipeline_config.example.yaml](pipeline_config.example.yaml) | Reference `pipeline_config.yaml` showing all supported config options |
 
@@ -27,20 +27,20 @@ This is not a Terraform module. There is no `terraform plan` or `terraform apply
 
 ### YAML → SQL Pipeline
 
-1. Consumer runs `dlt-generate --config pipeline_config.yaml --env dev`.
+1. Consumer runs `lakeflow-generate --config pipeline_config.yaml --env dev`.
 2. `cli.py` substitutes `${env}` placeholders throughout the YAML string (e.g., S3 paths become environment-specific).
 3. `cli.py` parses the YAML and validates it against all schema rules.
 4. `cli.py` preprocesses each pipeline entry to fill in optional field defaults.
-5. Jinja2 renders `dlt_pipeline.sql.j2` once per pipeline entry into `src/transformations/<schema>__<table>.sql`; the other four templates render once into `src/` and `resources/`.
+5. Jinja2 renders `lakeflow_pipeline.sql.j2` once per pipeline entry into `src/transformations/<schema>__<table>.sql`; the other four templates render once into `src/` and `resources/`.
 6. Consumer runs `databricks bundle deploy --target dev`.
 
-### DLT SQL Layers (generated by `dlt_pipeline.sql.j2`)
+### Pipeline SQL Layers (generated by `lakeflow_pipeline.sql.j2`)
 
 Each YAML pipeline entry produces up to four SQL objects:
 
 - **Bronze Streaming Table** — raw ingestion from S3. Supports Parquet, CSV (with options), and Excel (single or multi-sheet via `UNION ALL`). Always includes `source_file_path`, `source_file_size_bytes`, `source_file_modification_time`, and `dbx_load_time` audit columns.
 - **Bronze Cleaned Temporary View** — casts types, applies filters, deduplicates. All Silver tables consume from this view, not directly from Bronze.
-- **Quarantine Table** (conditional, only when `expectations` are defined) — rows that fail DLT constraints are routed here instead of dropped.
+- **Quarantine Table** (conditional, only when `expectations` are defined) — rows that fail pipeline constraints are routed here instead of dropped.
 - **Silver Table** — one of four strategies controlled by `table_type`:
   - `scd1`: `APPLY CHANGES INTO` upsert
   - `scd2`: `APPLY CHANGES INTO … TYPE 2` with `__start_at`/`__end_at`
@@ -51,21 +51,21 @@ Each YAML pipeline entry produces up to four SQL objects:
 
 A single DABs job resource with ordered tasks:
 
-1. `1_trigger_pipeline` — runs the DLT pipeline
+1. `1_trigger_pipeline` — runs the Lakeflow pipeline
 2. `2_apply_uc_tags` — applies UC tags, column masks, row filters (depends on task 1); runs `src/tagging_script.sql` via `sql_task.file`
 3. `3_expectations_report` (optional) — runs `src/expectations_report.sql` on the SQL warehouse; only included when `enable_expectations_report: true`
 4. `4_trigger_downstream_job` (optional) — chains to another Databricks job; only included when `trigger_downstream_job: true`
 
 ### Environment Handling
 
-`--env` is passed to `dlt-generate` and substituted for `${env}` in YAML string values (e.g., S3 paths). The target Unity Catalog is set via `var.catalog` in `databricks.yml` targets — there is no automatic env-to-catalog mapping.
+`--env` is passed to `lakeflow-generate` and substituted for `${env}` in YAML string values (e.g., S3 paths). The target Unity Catalog is set via `var.catalog` in `databricks.yml` targets — there is no automatic env-to-catalog mapping.
 
 ### Governance (Dual-Layer)
 
-- **TBLPROPERTIES** — embedded in DLT SQL at table creation time (versioned with code): `Project`, `GitHubRepo`, `FrameworkUsed`, `Layer`, `PipelineName`, `JobName`.
+- **TBLPROPERTIES** — embedded in SQL at table creation time (versioned with code): `Project`, `GitHubRepo`, `FrameworkUsed`, `Layer`, `PipelineName`, `JobName`.
 - **Unity Catalog Tags** — applied by the `2_apply_uc_tags` job task after the pipeline first registers tables in Unity Catalog.
 
-## Validations (run by `dlt-generate` before rendering)
+## Validations (run by `lakeflow-generate` before rendering)
 
 - `pipelines` must be a non-empty list; each entry needs `bronze_table_name`, `silver_table_name`, `table_type`, `description`, and `columns`.
 - `table_type` must be one of `scd1`, `scd2`, `streaming`, `materialized`.
@@ -81,7 +81,7 @@ A single DABs job resource with ordered tasks:
 
 Most changes touch two places:
 
-1. **`dlt_ingestion_framework/cli.py`** — add a new config field to `validate_config`, set its default in `preprocess_pipeline`, and add it to the context dict in `build_context`.
+1. **`lakeflow_ingestion_framework/cli.py`** — add a new config field to `validate_config`, set its default in `preprocess_pipeline`, and add it to the context dict in `build_context`.
 2. **The relevant `.j2` template** — use Jinja2 syntax (`{% if %}`, `{% for %}`, `{{ expr }}`). DABs interpolations like `${var.catalog}` pass through untouched since they are not `{{ }}` syntax.
 
 ### Jinja2 gotcha: `cdc_conf['keys']`

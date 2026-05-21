@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-DLT Ingestion Framework - Bundle Generator
+Lakeflow Pipeline Ingestion Framework - Bundle Generator
 
 Reads pipeline_config.yaml, validates it, renders Jinja2 templates, and writes:
   src/transformations/<schema>__<table>.sql  -- one Lakeflow SQL file per pipeline entry
@@ -10,8 +10,8 @@ Reads pipeline_config.yaml, validates it, renders Jinja2 templates, and writes:
   resources/job.yml                         -- DABs workflow job resource definition
 
 Usage:
-    dlt-generate --config pipeline_config.yaml --env dev
-    dlt-generate --config pipeline_config.yaml --env prod
+    lakeflow-generate --config pipeline_config.yaml --env dev
+    lakeflow-generate --config pipeline_config.yaml --env prod
 """
 
 import argparse
@@ -24,11 +24,11 @@ from jinja2 import Environment, FileSystemLoader, Undefined
 VALID_ENVS = {"dev", "test", "prod"}
 VALID_TABLE_TYPES = {"scd1", "scd2", "streaming", "materialized"}
 VALID_FILE_TYPES = {"parquet", "csv", "excel"}
-FRAMEWORK_TAG = "DLT Ingestion DABs Framework"
+FRAMEWORK_TAG = "Lakeflow Pipeline Ingestion Framework"
 
 
 # ---------------------------------------------------------------------------
-# Step 1: env substitution — mirrors Terraform's templatestring()
+# Step 1: env substitution
 # ---------------------------------------------------------------------------
 
 def substitute_env(raw: str, env: str) -> str:
@@ -37,7 +37,7 @@ def substitute_env(raw: str, env: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Step 2: validation — mirrors Terraform variable validation blocks
+# Step 2: validation
 # ---------------------------------------------------------------------------
 
 def validate_config(config: dict, env: str) -> None:
@@ -213,9 +213,9 @@ def build_context(config: dict, env: str) -> dict:
     pipelines_with_expectations = [p for p in pipelines if p.get("expectations")]
 
     # on-update-success is prepended so it appears before the fatal-failure alert in the YAML.
-    dlt_alerts = ["on-update-fatal-failure"]
+    pipeline_alerts = ["on-update-fatal-failure"]
     if email_on_pipeline_success:
-        dlt_alerts.insert(0, "on-update-success")
+        pipeline_alerts.insert(0, "on-update-success")
 
     expectations_report_emails = (
         config.get("expectations_report_emails") or email_notifications
@@ -243,7 +243,7 @@ def build_context(config: dict, env: str) -> dict:
         "email_on_job_success": config.get("email_on_job_success", True),
         "email_on_pipeline_success": email_on_pipeline_success,
         "expectations_report_emails": expectations_report_emails,
-        "dlt_alerts": dlt_alerts,
+        "pipeline_alerts": pipeline_alerts,
         "excel_used": excel_used,
         "pipeline_access_group": config.get("pipeline_access_group"),
         "service_principal_job_runners": config.get("service_principal_job_runners") or [],
@@ -272,7 +272,7 @@ def render_and_write(context: dict, templates_dir: Path, output_dir: Path) -> No
     job.yml) are rendered once using the full shared context.
     """
     jinja_env = make_jinja_env(templates_dir)
-    sql_template = jinja_env.get_template("dlt_pipeline.sql.j2")
+    sql_template = jinja_env.get_template("lakeflow_pipeline.sql.j2")
 
     transformations_dir = output_dir / "src" / "transformations"
     transformations_dir.mkdir(parents=True, exist_ok=True)
@@ -313,8 +313,8 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  dlt-generate --config pipeline_config.yaml --env dev
-  dlt-generate --config pipeline_config.yaml --env prod --output-dir .
+  lakeflow-generate --config pipeline_config.yaml --env dev
+  lakeflow-generate --config pipeline_config.yaml --env prod --output-dir .
         """,
     )
     parser.add_argument("--config", required=True, help="Path to your pipeline_config.yaml")

@@ -39,7 +39,7 @@ variables:
 
 # ---------------------------------------------------------------------------
 # Generated resource files are included here.
-# Run `python generate.py --config pipeline_config.yaml --env <env>` first.
+# Run `lakeflow-generate --config pipeline_config.yaml --env <env>` first.
 # ---------------------------------------------------------------------------
 include:
   - resources/*.yml
