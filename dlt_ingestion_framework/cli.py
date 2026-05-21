@@ -234,16 +234,26 @@ def build_context(config: dict, env: str) -> dict:
 
 def render_and_write(context: dict, templates_dir: Path, output_dir: Path) -> None:
     jinja_env = make_jinja_env(templates_dir)
+    sql_template = jinja_env.get_template("dlt_pipeline.sql.j2")
 
-    outputs = {
-        "src/dlt_pipeline.sql": jinja_env.get_template("dlt_pipeline.sql.j2").render(context),
+    transformations_dir = output_dir / "src" / "transformations"
+    transformations_dir.mkdir(parents=True, exist_ok=True)
+
+    for pipe in context["pipelines"]:
+        parts = pipe["silver_table_name"].split(".")
+        filename = "__".join(parts[-2:]) + ".sql"
+        out_path = transformations_dir / filename
+        out_path.write_text(sql_template.render({**context, "pipe": pipe}), encoding="utf-8")
+        print(f"  Generated: {out_path}")
+
+    once_outputs = {
         "src/tagging_script.sql": jinja_env.get_template("tagging_script.sql.j2").render(context),
         "src/expectations_report.sql": jinja_env.get_template("expectations_report.sql.j2").render(context),
         "resources/pipeline.yml": jinja_env.get_template("pipeline.yml.j2").render(context),
         "resources/job.yml": jinja_env.get_template("job.yml.j2").render(context),
     }
 
-    for rel_path, content in outputs.items():
+    for rel_path, content in once_outputs.items():
         out_path = output_dir / rel_path
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(content, encoding="utf-8")
@@ -305,7 +315,7 @@ Examples:
     print(f"Generating bundle files for env='{args.env}', pipeline='{config['pipeline_name']}'...")
     render_and_write(context, templates_dir, output_dir)
     print("\nDone. Next steps:")
-    print("  1. Review the generated files in src/ and resources/")
+    print("  1. Review the generated files in src/transformations/ and resources/")
     print("  2. Set your env-specific variables in databricks.yml targets")
     print("  3. databricks bundle validate --target " + args.env)
     print("  4. databricks bundle deploy --target " + args.env)

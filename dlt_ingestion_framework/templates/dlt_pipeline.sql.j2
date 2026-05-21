@@ -1,4 +1,3 @@
-{% for pipe in pipelines %}
 -- ============================================================
 -- BRONZE TABLE: {{ pipe.bronze_table_name | upper }}
 -- SILVER TABLE: {{ pipe.silver_table_name | upper }}
@@ -265,5 +264,3 @@ AS
 SELECT *
 FROM bronze_cleaned_view_{{ pipe.silver_table_name | last_dot_part }};
 {% endif %}
-
-{% endfor %}

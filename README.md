@@ -9,7 +9,7 @@ A YAML-driven framework for deploying **Delta Live Tables pipelines** and **Data
 3. You run `databricks bundle deploy` to deploy everything to Databricks.
 
 ```
-pipeline_config.yaml  ──► dlt-generate ──► src/dlt_pipeline.sql
+pipeline_config.yaml  ──► dlt-generate ──► src/transformations/<schema>__<table>.sql  (one per pipeline)
                                         ──► src/tagging_script.sql
                                         ──► src/expectations_report.sql
                                         ──► resources/pipeline.yml
@@ -275,7 +275,8 @@ After running `dlt-generate`, your project repo will contain:
 databricks.yml               ← your bundle config (targets, variables)
 pipeline_config.yaml         ← your pipeline definitions
 src/
-  dlt_pipeline.sql           ← generated DLT SQL (loaded as pipeline library)
+  transformations/
+    <schema>__<table>.sql    ← one generated SQL file per pipeline entry
   tagging_script.sql         ← generated ALTER TABLE SET TAGS script
   expectations_report.sql    ← generated data quality query
 resources/

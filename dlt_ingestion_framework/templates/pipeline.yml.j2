@@ -8,9 +8,10 @@ resources:
       channel: {{ "PREVIEW" if excel_used else "CURRENT" }}
       configuration:
         pipelines.numUpdateRetryAttempts: "1"
+      root_path: ../src
       libraries:
-        - file:
-            path: ../src/dlt_pipeline.sql
+        - glob:
+            include: ../src/transformations/**
       event_log:
         catalog: ${var.catalog}
         schema: ${var.audit_schema}
