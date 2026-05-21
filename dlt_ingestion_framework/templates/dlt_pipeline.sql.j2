@@ -99,11 +99,7 @@ FROM STREAM READ_FILES(
 -- ============================
 -- 2. BRONZE CLEANED VIEW
 -- ============================
-CREATE TEMPORARY
-{% if pipe.table_type != "materialized" %}
-STREAMING
-{% endif %}
-VIEW bronze_cleaned_view_{{ pipe.silver_table_name | last_dot_part }}
+CREATE TEMPORARY {% if pipe.table_type != "materialized" %}STREAMING {% endif %}LIVE VIEW bronze_cleaned_view_{{ pipe.silver_table_name | last_dot_part }}
 AS
 SELECT
 {% for col in pipe.columns %}
