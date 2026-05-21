@@ -3,11 +3,11 @@
 DLT Ingestion Framework - Bundle Generator
 
 Reads pipeline_config.yaml, validates it, renders Jinja2 templates, and writes:
-  src/dlt_pipeline.sql          -- loaded as the DLT pipeline library
-  src/tagging_script.sql        -- run by the 2_apply_uc_tags job task
-  src/expectations_report.sql   -- run by the 3_expectations_report job task
-  resources/pipeline.yml        -- DABs DLT pipeline resource definition
-  resources/job.yml             -- DABs workflow job resource definition
+  src/transformations/<schema>__<table>.sql  -- one Lakeflow SQL file per pipeline entry
+  src/tagging_script.sql                     -- run by the 2_apply_uc_tags job task
+  src/expectations_report.sql               -- run by the 3_expectations_report job task
+  resources/pipeline.yml                    -- DABs pipeline resource (glob-includes transformations/)
+  resources/job.yml                         -- DABs workflow job resource definition
 
 Usage:
     dlt-generate --config pipeline_config.yaml --env dev
@@ -41,6 +41,7 @@ def substitute_env(raw: str, env: str) -> str:
 # ---------------------------------------------------------------------------
 
 def validate_config(config: dict, env: str) -> None:
+    """Raise ValueError with a descriptive message if the config violates any schema rule."""
     pipelines = config.get("pipelines")
     if not isinstance(pipelines, list) or not pipelines:
         raise ValueError("Config must contain a top-level 'pipelines' list with at least one entry.")
@@ -115,6 +116,11 @@ def validate_config(config: dict, env: str) -> None:
 # ---------------------------------------------------------------------------
 
 def preprocess_pipeline(pipe: dict) -> dict:
+    """Return a copy of a pipeline entry with all optional fields defaulted.
+
+    Templates use plain attribute access (e.g. pipe.where_clause, pipe.csv_options.delimiter)
+    without existence checks, so every key must be present before rendering.
+    """
     p = dict(pipe)
     p.setdefault("reuse_bronze", False)
     p.setdefault("bronze_columns", None)
@@ -154,6 +160,19 @@ def preprocess_pipeline(pipe: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def make_jinja_env(templates_dir: Path) -> Environment:
+    """Return a Jinja2 Environment configured for clean SQL/YAML output.
+
+    trim_blocks + lstrip_blocks together prevent Jinja2 control tags ({% if %}, {% for %})
+    from leaving stray blank lines and leading whitespace in the rendered output.
+
+    Undefined (not StrictUndefined) is intentional: some context keys are optional and
+    templates guard them with {% if %} — a missing key should silently produce nothing,
+    not raise an error at render time.
+
+    Custom filters:
+      last_dot_part            "catalog.schema.table" -> "table"
+      second_to_last_dot_part  "catalog.schema.table" -> "schema"
+    """
     env = Environment(
         loader=FileSystemLoader(str(templates_dir)),
         keep_trailing_newline=True,
@@ -171,6 +190,13 @@ def make_jinja_env(templates_dir: Path) -> Environment:
 # ---------------------------------------------------------------------------
 
 def build_context(config: dict, env: str) -> dict:
+    """Build the Jinja2 template context dict from the parsed config.
+
+    Note on key naming: keys like 'Project', 'GitHubRepo', 'FrameworkUsed', 'JobName',
+    'PipelineName' are PascalCase because they map directly to TBLPROPERTIES key names
+    in the generated SQL. The lowercase equivalents ('project', 'job_name', etc.) are
+    separate entries used by the YAML resource templates.
+    """
     pipeline_name = config["pipeline_name"]
     job_name = f"{pipeline_name}_job"
     email_notifications = config.get("email_notifications") or []
@@ -178,6 +204,7 @@ def build_context(config: dict, env: str) -> dict:
     custom_tags = config.get("tags") or {}
     pipelines = [preprocess_pipeline(p) for p in config["pipelines"]]
 
+    # Excel requires the pipeline to run on the PREVIEW channel (runtime with excel support).
     excel_used = any(
         p.get("source_file_type") == "excel"
         for p in pipelines
@@ -185,6 +212,7 @@ def build_context(config: dict, env: str) -> dict:
     )
     pipelines_with_expectations = [p for p in pipelines if p.get("expectations")]
 
+    # on-update-success is prepended so it appears before the fatal-failure alert in the YAML.
     dlt_alerts = ["on-update-fatal-failure"]
     if email_on_pipeline_success:
         dlt_alerts.insert(0, "on-update-success")
@@ -233,6 +261,16 @@ def build_context(config: dict, env: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def render_and_write(context: dict, templates_dir: Path, output_dir: Path) -> None:
+    """Render all templates and write output files.
+
+    dlt_pipeline.sql.j2 is rendered once per pipeline entry into
+    src/transformations/<schema>__<table>.sql. The pipeline resource YAML
+    picks up all files in that directory via a glob, so no manual library
+    entries are needed when pipelines are added or removed.
+
+    All other templates (tagging script, expectations report, pipeline.yml,
+    job.yml) are rendered once using the full shared context.
+    """
     jinja_env = make_jinja_env(templates_dir)
     sql_template = jinja_env.get_template("dlt_pipeline.sql.j2")
 
@@ -240,9 +278,14 @@ def render_and_write(context: dict, templates_dir: Path, output_dir: Path) -> No
     transformations_dir.mkdir(parents=True, exist_ok=True)
 
     for pipe in context["pipelines"]:
+        # Derive filename from the last two parts of the silver table name:
+        # "catalog.schema.table" -> "schema__table.sql"
         parts = pipe["silver_table_name"].split(".")
         filename = "__".join(parts[-2:]) + ".sql"
         out_path = transformations_dir / filename
+        # Merge the shared context with the per-pipeline dict so the template
+        # has access to both pipeline-level vars (pipe.*) and shared vars
+        # (pipeline_name, Project, etc.).
         out_path.write_text(sql_template.render({**context, "pipe": pipe}), encoding="utf-8")
         print(f"  Generated: {out_path}")
 
