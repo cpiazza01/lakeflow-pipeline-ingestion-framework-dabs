@@ -263,7 +263,7 @@ def build_context(config: dict, env: str) -> dict:
 def render_and_write(context: dict, templates_dir: Path, output_dir: Path) -> None:
     """Render all templates and write output files.
 
-    dlt_pipeline.sql.j2 is rendered once per pipeline entry into
+    lakeflow_pipeline.sql.j2 is rendered once per pipeline entry into
     src/transformations/<schema>__<table>.sql. The pipeline resource YAML
     picks up all files in that directory via a glob, so no manual library
     entries are needed when pipelines are added or removed.

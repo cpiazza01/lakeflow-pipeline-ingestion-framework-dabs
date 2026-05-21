@@ -1,5 +1,5 @@
 bundle:
-  name: dlt-ingestion-framework
+  name: lakeflow-pipeline-ingestion-framework
 
 # Files are deployed to ${workspace.root_path}/files/...
 # Notebooks are deployed to ${workspace.root_path}/...
