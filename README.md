@@ -45,20 +45,19 @@ pip install git+https://github.com/your-org/lakeflow-pipeline-ingestion-framewor
 
 Add it to your project's `requirements.txt` or `pyproject.toml` to keep the version pinned.
 
-### 2. Copy the example files
+### 2. Create your config files
 
-Copy [`pipeline_config.example.yaml`](pipeline_config.example.yaml) and [`databricks.example.yml`](databricks.example.yml) into your project repo:
-
-```bash
-cp pipeline_config.example.yaml pipeline_config.yaml
-cp databricks.example.yml databricks.yml
-```
+Create a `pipeline_config.yaml` (your pipeline definitions) and a `databricks.yml` (your DABs bundle config) in your project repo. See the configuration reference below for all supported fields.
 
 ### 3. Configure `databricks.yml`
 
 Edit the `targets` section with your environment-specific values:
 
 ```yaml
+variables:
+  project:
+    default: my_project   # used in workspace root_path and TBLPROPERTIES governance tags
+
 targets:
   dev:
     variables:
@@ -70,18 +69,19 @@ targets:
       warehouse_id: abc123def456
 ```
 
+`lakeflow-generate` reads `project` and `catalog` directly from `databricks.yml` for the target env, so you only set them once.
+
 ### 4. Define your pipelines in `pipeline_config.yaml`
 
 ```yaml
 pipeline_name: my_pipeline
-project: my_project
 github_repo: github.com/my-org/my-repo
 email_notifications:
   - oncall@my-org.com
 
 pipelines:
   - bronze_table_name: "stage_hr.employees"
-    silver_table_name: "catalog.core_hr.employees"
+    silver_table_name: "core_hr.employees"
     table_type: "scd1"
     source_path: "s3://my-bucket-${env}/hr/employees"
     source_file_type: "parquet"
@@ -96,7 +96,7 @@ pipelines:
         comment: "Unique employee identifier"
 ```
 
-See [`pipeline_config.example.yaml`](pipeline_config.example.yaml) for all supported patterns.
+See the Pipeline Configuration Reference below for all supported fields and patterns.
 
 ### 5. Generate and deploy
 
@@ -130,7 +130,6 @@ Then re-run `lakeflow-generate` and redeploy.
 | Field | Required | Default | Description |
 |---|---|---|---|
 | `pipeline_name` | Yes | — | Display name for the Lakeflow pipeline and job |
-| `project` | Yes | — | Project name, embedded in TBLPROPERTIES for governance |
 | `github_repo` | Yes | — | Repo URL, embedded in TBLPROPERTIES for governance |
 | `email_notifications` | Yes | — | Email addresses for job failure/success alerts |
 | `email_on_pipeline_success` | No | `true` | Send email when pipeline update succeeds |
@@ -152,7 +151,7 @@ Then re-run `lakeflow-generate` and redeploy.
 | Field | Required | Description |
 |---|---|---|
 | `bronze_table_name` | Yes | Name for the raw ingestion table |
-| `silver_table_name` | Yes | Fully-qualified name for the final table (`catalog.schema.table`) |
+| `silver_table_name` | Yes | `schema.table` name for the final Silver table (catalog is set via `var.catalog` in `databricks.yml`) |
 | `table_type` | Yes | One of: `scd1`, `scd2`, `streaming`, `materialized` |
 | `description` | Yes | Table description (set as `COMMENT`) |
 | `source_path` | Yes* | Cloud storage path. Supports `${env}` substitution. *Not required when `reuse_bronze: true` |

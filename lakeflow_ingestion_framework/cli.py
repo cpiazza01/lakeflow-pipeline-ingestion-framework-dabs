@@ -111,7 +111,44 @@ def validate_config(config: dict, env: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Step 3: preprocessing — fill optional field defaults so templates use simple
+# Step 3: resolve catalog from databricks.yml
+# ---------------------------------------------------------------------------
+
+def resolve_bundle_var(bundle_path: Path, env: str, var_name: str) -> str:
+    """Return the value of a DABs variable for the given target from databricks.yml.
+
+    Lookup order:
+      1. targets.<env>.variables.<var_name>  (target-specific override)
+      2. variables.<var_name>.default        (bundle-level default)
+
+    Raises ValueError if neither is found.
+    """
+    if not bundle_path.exists():
+        raise ValueError(
+            f"Bundle config not found: {bundle_path}. "
+            "Use --bundle-config to specify its path."
+        )
+
+    bundle = yaml.safe_load(bundle_path.read_text(encoding="utf-8"))
+
+    target_vars = bundle.get("targets", {}).get(env, {}).get("variables", {})
+    value = target_vars.get(var_name)
+
+    if value is None:
+        bundle_var = bundle.get("variables", {}).get(var_name, {})
+        value = bundle_var.get("default") if isinstance(bundle_var, dict) else bundle_var
+
+    if not value:
+        raise ValueError(
+            f"Could not resolve '{var_name}' for target '{env}' in {bundle_path}. "
+            f"Set it under targets.<env>.variables.{var_name} or variables.{var_name}.default."
+        )
+
+    return value
+
+
+# ---------------------------------------------------------------------------
+# Step 4: preprocessing — fill optional field defaults so templates use simple
 #         attribute access without needing existence checks
 # ---------------------------------------------------------------------------
 
@@ -156,7 +193,7 @@ def preprocess_pipeline(pipe: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Step 4: Jinja2 environment setup
+# Step 5: Jinja2 environment setup
 # ---------------------------------------------------------------------------
 
 def make_jinja_env(templates_dir: Path) -> Environment:
@@ -186,10 +223,10 @@ def make_jinja_env(templates_dir: Path) -> Environment:
 
 
 # ---------------------------------------------------------------------------
-# Step 5: build shared template context from config
+# Step 6: build shared template context from config
 # ---------------------------------------------------------------------------
 
-def build_context(config: dict, env: str) -> dict:
+def build_context(config: dict, env: str, catalog: str, project: str) -> dict:
     """Build the Jinja2 template context dict from the parsed config.
 
     Note on key naming: keys like 'Project', 'GitHubRepo', 'FrameworkUsed', 'JobName',
@@ -226,15 +263,16 @@ def build_context(config: dict, env: str) -> dict:
         "pipelines": pipelines,
         "pipelines_with_expectations": pipelines_with_expectations,
         "pipeline_name": pipeline_name,
+        "catalog": catalog,
         "audit_schema": config.get("audit_schema", "audit"),
-        "Project": config["project"],
+        "Project": project,
         "GitHubRepo": config["github_repo"],
         "FrameworkUsed": FRAMEWORK_TAG,
         "JobName": job_name,
         "PipelineName": pipeline_name,
         "custom_tags": custom_tags,
         # Resource template variables
-        "project": config["project"],
+        "project": project,
         "github_repo": config["github_repo"],
         "framework_tag": FRAMEWORK_TAG,
         "job_name": job_name,
@@ -257,7 +295,7 @@ def build_context(config: dict, env: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Step 6: render and write all outputs
+# Step 7: render and write all outputs
 # ---------------------------------------------------------------------------
 
 def render_and_write(context: dict, templates_dir: Path, output_dir: Path) -> None:
@@ -329,6 +367,11 @@ Examples:
         default=".",
         help="Root directory to write generated files into (default: current directory)",
     )
+    parser.add_argument(
+        "--bundle-config",
+        default="databricks.yml",
+        help="Path to databricks.yml (default: databricks.yml in current directory)",
+    )
     args = parser.parse_args()
 
     config_path = Path(args.config)
@@ -351,7 +394,15 @@ Examples:
         print(f"Validation error: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    context = build_context(config, args.env)
+    bundle_path = Path(args.bundle_config)
+    try:
+        catalog = resolve_bundle_var(bundle_path, args.env, "catalog")
+        project = resolve_bundle_var(bundle_path, args.env, "project")
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    context = build_context(config, args.env, catalog, project)
     templates_dir = Path(__file__).parent / "templates"
     output_dir = Path(args.output_dir)
 
