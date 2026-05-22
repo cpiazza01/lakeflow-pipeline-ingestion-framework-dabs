@@ -83,7 +83,7 @@ jobs:
 
       - name: Generate release notes
         if: steps.check.outputs.skip != 'true'
-        uses: orhun/git-cliff-action@v3
+        uses: orhun/git-cliff-action@v4
         with:
           config: cliff.toml
           args: --unreleased --tag v${{ steps.bump.outputs.new_version }} --strip all
@@ -92,7 +92,7 @@ jobs:
 
       - name: Update CHANGELOG.md
         if: steps.check.outputs.skip != 'true'
-        uses: orhun/git-cliff-action@v3
+        uses: orhun/git-cliff-action@v4
         with:
           config: cliff.toml
           args: --tag v${{ steps.bump.outputs.new_version }}
