@@ -131,21 +131,21 @@ class TestLakeflowPipelineSql:
 
     def test_materialized_cleaned_view_omits_stream_prefix(self, jinja_env):
         # materialized pipelines must use LIVE VIEW (no STREAMING keyword)
-        pipe = make_pipe(table_type="materialized", cdc_conf={})
+        pipe = make_pipe(table_type="materialized", cdc_conf=None)
         out = self.render(jinja_env, pipe)
         assert "CREATE TEMPORARY LIVE VIEW bronze_cleaned_view_observations" not in out
         assert "CREATE TEMPORARY LIVE VIEW bronze_cleaned_view_patients" in out
 
     def test_where_clause_applied_in_cleaned_view(self, jinja_env):
         # where_clause is rendered inside the cleaned view, not the silver table
-        pipe = make_pipe(table_type="materialized", cdc_conf={}, where_clause="type = 'numeric'")
+        pipe = make_pipe(table_type="materialized", cdc_conf=None, where_clause="type = 'numeric'")
         out = self.render(jinja_env, pipe)
         assert "WHERE type = 'numeric'" in out
 
     def test_qualify_clause_applied_in_cleaned_view(self, jinja_env):
         # qualify_clause is rendered after WHERE in the cleaned view
         pipe = make_pipe(
-            table_type="materialized", cdc_conf={},
+            table_type="materialized", cdc_conf=None,
             qualify_clause="ROW_NUMBER() OVER(PARTITION BY member_id, loinc_code ORDER BY observation_ts DESC) = 1",
         )
         out = self.render(jinja_env, pipe)
@@ -195,25 +195,25 @@ class TestLakeflowPipelineSql:
 
     def test_streaming_silver_table_created(self, jinja_env):
         # streaming pipeline creates an OR REFRESH STREAMING TABLE for silver
-        pipe = make_pipe(table_type="streaming", cdc_conf={})
+        pipe = make_pipe(table_type="streaming", cdc_conf=None)
         out = self.render(jinja_env, pipe)
         assert "CREATE OR REFRESH STREAMING TABLE enterprise_dev.silver.patients" in out
 
     def test_streaming_silver_inline_schema(self, jinja_env):
         # streaming silver defines columns inline (with COMMENT strings)
-        pipe = make_pipe(table_type="streaming", cdc_conf={})
+        pipe = make_pipe(table_type="streaming", cdc_conf=None)
         out = self.render(jinja_env, pipe)
         assert "member_id STRING COMMENT 'Synthea patient UUID'" in out
 
     def test_streaming_silver_no_apply_changes(self, jinja_env):
         # streaming tables must not use APPLY CHANGES
-        pipe = make_pipe(table_type="streaming", cdc_conf={})
+        pipe = make_pipe(table_type="streaming", cdc_conf=None)
         out = self.render(jinja_env, pipe)
         assert "APPLY CHANGES" not in out
 
     def test_streaming_silver_selects_from_stream(self, jinja_env):
         # streaming silver SELECTs directly FROM STREAM(cleaned_view)
-        pipe = make_pipe(table_type="streaming", cdc_conf={})
+        pipe = make_pipe(table_type="streaming", cdc_conf=None)
         out = self.render(jinja_env, pipe)
         assert "FROM STREAM(bronze_cleaned_view_patients)" in out
 
@@ -221,20 +221,20 @@ class TestLakeflowPipelineSql:
 
     def test_materialized_silver_view_created(self, jinja_env):
         # materialized pipeline creates an OR REFRESH MATERIALIZED VIEW for silver
-        pipe = make_pipe(table_type="materialized", cdc_conf={})
+        pipe = make_pipe(table_type="materialized", cdc_conf=None)
         out = self.render(jinja_env, pipe)
         assert "CREATE OR REFRESH MATERIALIZED VIEW enterprise_dev.silver.patients" in out
 
     def test_materialized_silver_no_stream_keyword(self, jinja_env):
         # materialized silver must not use STREAM(...) in the FROM clause
-        pipe = make_pipe(table_type="materialized", cdc_conf={})
+        pipe = make_pipe(table_type="materialized", cdc_conf=None)
         out = self.render(jinja_env, pipe)
         assert "FROM bronze_cleaned_view_patients" in out
         assert "FROM STREAM(bronze_cleaned_view_patients)" not in out
 
     def test_materialized_silver_no_apply_changes(self, jinja_env):
         # materialized tables must not use APPLY CHANGES
-        pipe = make_pipe(table_type="materialized", cdc_conf={})
+        pipe = make_pipe(table_type="materialized", cdc_conf=None)
         out = self.render(jinja_env, pipe)
         assert "APPLY CHANGES" not in out
 
@@ -375,7 +375,7 @@ class TestTaggingScript:
     def test_column_mask_applied(self, jinja_env):
         # column_masks must produce ALTER COLUMN SET MASK statements
         pipe = make_pipe(column_masks=[
-            {"column": "ssn", "function": "enterprise_dev.functions.mask_ssn", "using_columns": None}
+            {"column": "ssn", "function": "enterprise_dev.functions.mask_ssn"}
         ])
         out = self.render(jinja_env, pipes=[pipe])
         assert "SET MASK enterprise_dev.functions.mask_ssn" in out
@@ -454,7 +454,7 @@ class TestExpectationsReport:
             bronze_table_name="enterprise_dev.bronze.encounters",
             silver_table_name="enterprise_dev.silver.encounters",
             table_type="streaming",
-            cdc_conf={},
+            cdc_conf=None,
             expectations=[
                 {"name": "encounter_id_not_null", "condition": "encounter_id IS NOT NULL", "action": "FAIL UPDATE"},
             ],

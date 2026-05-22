@@ -20,13 +20,170 @@ import argparse
 import sys
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
+from typing import Any, Literal
 
 import yaml
 from jinja2 import Environment, FileSystemLoader, Undefined
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
-VALID_TABLE_TYPES = {"scd1", "scd2", "streaming", "materialized"}
-VALID_FILE_TYPES = {"parquet", "csv", "excel"}
 FRAMEWORK_TAG = "Lakeflow Pipeline Ingestion Framework"
+
+
+# ---------------------------------------------------------------------------
+# Schema models
+# ---------------------------------------------------------------------------
+
+class Column(BaseModel):
+    source: str
+    target: str
+    target_datatype: str
+    comment: str = ""
+    tags: dict[str, str] | None = None
+
+
+class Expectation(BaseModel):
+    name: str
+    condition: str
+    action: str = "WARN"
+
+
+class CdcConf(BaseModel):
+    keys: list[str]
+    sequence_by: str
+    apply_as_delete: str = ""
+    apply_as_truncate: str = ""
+
+
+class CsvOptions(BaseModel):
+    header: bool = True
+    delimiter: str = ","
+    mode: str = "PERMISSIVE"
+    inferSchema: bool = False
+    bad_records_path: str = ""
+
+
+class ExcelOptions(BaseModel):
+    headerRows: int = 0
+    inferSchema: bool = False
+    dataAddress: str = ""
+    sheet_names: list[str] | None = None
+
+
+class ColumnMask(BaseModel):
+    column: str
+    function: str
+    using_columns: list[str] = []
+
+    @field_validator("using_columns", mode="before")
+    @classmethod
+    def coerce_none_to_empty(cls, v: Any) -> list[str]:
+        # YAML `using_columns:` with no value parses to None; treat as empty list
+        return v if v is not None else []
+
+
+class RowFilter(BaseModel):
+    function: str
+    on_columns: list[str]
+
+
+class PipelineEntry(BaseModel):
+    bronze_table_name: str
+    silver_table_name: str
+    table_type: Literal["scd1", "scd2", "streaming", "materialized"]
+    description: str
+    columns: list[Column]
+    source_path: str | None = None
+    source_file_type: Literal["parquet", "csv", "excel"] | None = None
+    reuse_bronze: bool = False
+    bronze_columns: list[dict[str, str]] | None = None
+    extra_bronze_columns: list[dict[str, str]] = []
+    cdc_conf: CdcConf | None = None
+    qualify_clause: str = ""
+    where_clause: str = ""
+    expectations: list[Expectation] = []
+    column_masks: list[ColumnMask] = []
+    row_filter: RowFilter | None = None
+    csv_options: CsvOptions = Field(default_factory=CsvOptions)
+    excel_options: ExcelOptions = Field(default_factory=ExcelOptions)
+
+    @field_validator("columns")
+    @classmethod
+    def columns_non_empty(cls, v: list) -> list:
+        if not v:
+            raise ValueError("columns must be a non-empty list.")
+        return v
+
+    @model_validator(mode="after")
+    def check_cdc_conf(self) -> PipelineEntry:
+        if self.table_type in ("scd1", "scd2") and self.cdc_conf is None:
+            raise ValueError(
+                f"table_type '{self.table_type}' requires a cdc_conf block with 'keys' and 'sequence_by'."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def check_qualify_clause(self) -> PipelineEntry:
+        if self.qualify_clause and self.table_type != "materialized":
+            raise ValueError("qualify_clause is only valid for table_type 'materialized'.")
+        return self
+
+    @model_validator(mode="after")
+    def check_source_file_type(self) -> PipelineEntry:
+        if not self.reuse_bronze and self.source_file_type is None:
+            raise ValueError(
+                "source_file_type must be one of parquet, csv, excel (or set reuse_bronze: true)."
+            )
+        return self
+
+
+class Schedule(BaseModel):
+    quartz_cron_expression: str
+    timezone_id: str
+    pause_status: str = "UNPAUSED"
+
+
+class FileTrigger(BaseModel):
+    url: str
+    wait_after_last_change_seconds: int
+    min_time_between_triggers_seconds: int
+
+
+class PipelineConfig(BaseModel):
+    pipeline_name: str
+    github_repo: str
+    pipelines: list[PipelineEntry]
+    schedule: Schedule | None = None
+    file_trigger: FileTrigger | None = None
+    trigger_downstream_job: bool = False
+    downstream_job_id: int | None = None
+    downstream_job_parameters: dict[str, Any] = {}
+    email_notifications: list[str] = []
+    email_on_pipeline_success: bool = True
+    email_on_job_success: bool = True
+    expectations_report_emails: list[str] = []
+    enable_expectations_report: bool = False
+    tags: dict[str, str] = {}
+    pipeline_access_group: str | None = None
+    service_principal_job_runners: list[str] = []
+
+    @field_validator("pipelines")
+    @classmethod
+    def pipelines_non_empty(cls, v: list) -> list:
+        if not v:
+            raise ValueError("pipelines must be a non-empty list with at least one entry.")
+        return v
+
+    @model_validator(mode="after")
+    def check_exclusive_triggers(self) -> PipelineConfig:
+        if self.schedule and self.file_trigger:
+            raise ValueError("'schedule' and 'file_trigger' are mutually exclusive — set only one.")
+        return self
+
+    @model_validator(mode="after")
+    def check_downstream_job(self) -> PipelineConfig:
+        if self.trigger_downstream_job and not self.downstream_job_id:
+            raise ValueError("'downstream_job_id' must be set when 'trigger_downstream_job' is true.")
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -42,74 +199,17 @@ def substitute_env(raw: str, env: str) -> str:
 # Step 2: validation
 # ---------------------------------------------------------------------------
 
-def validate_config(config: dict, env: str) -> None:
-    """Raise ValueError with a descriptive message if the config violates any schema rule."""
-    pipelines = config.get("pipelines")
-    if not isinstance(pipelines, list) or not pipelines:
-        raise ValueError("Config must contain a top-level 'pipelines' list with at least one entry.")
+def validate_config(config: dict, env: str) -> PipelineConfig:
+    """Validate config against the schema and return a PipelineConfig model.
 
+    Raises ValueError with a descriptive message if any rule is violated.
+    """
     if not env:
         raise ValueError("'env' must be a non-empty string.")
-
-    schedule = config.get("schedule")
-    file_trigger = config.get("file_trigger")
-    if schedule and file_trigger:
-        raise ValueError("'schedule' and 'file_trigger' are mutually exclusive — set only one.")
-
-    trigger_downstream = config.get("trigger_downstream_job", False)
-    if trigger_downstream and not config.get("downstream_job_id"):
-        raise ValueError("'downstream_job_id' must be set when 'trigger_downstream_job' is true.")
-
-    for p in pipelines:
-        name = p.get("silver_table_name", "<unknown>")
-
-        for field in ("bronze_table_name", "silver_table_name", "table_type", "description"):
-            if not p.get(field):
-                raise ValueError(f"Pipeline '{name}' is missing required field '{field}'.")
-
-        if not p.get("columns"):
-            raise ValueError(f"Pipeline '{name}' must include a non-empty 'columns' list.")
-
-        table_type = p["table_type"]
-        if table_type not in VALID_TABLE_TYPES:
-            raise ValueError(
-                f"Pipeline '{name}' has invalid table_type '{table_type}'. "
-                f"Must be one of: {', '.join(sorted(VALID_TABLE_TYPES))}."
-            )
-
-        if table_type in ("scd1", "scd2"):
-            cdc = p.get("cdc_conf") or {}
-            if not cdc.get("keys") or not cdc.get("sequence_by"):
-                raise ValueError(
-                    f"Pipeline '{name}' with table_type '{table_type}' requires "
-                    "a 'cdc_conf' block with 'keys' and 'sequence_by'."
-                )
-
-        if p.get("qualify_clause") and table_type != "materialized":
-            raise ValueError(
-                f"Pipeline '{name}': 'qualify_clause' is only supported for table_type 'materialized'."
-            )
-
-        for mask in p.get("column_masks") or []:
-            if not mask.get("column") or not mask.get("function"):
-                raise ValueError(
-                    f"Pipeline '{name}': each 'column_masks' entry must include 'column' and 'function'."
-                )
-
-        row_filter = p.get("row_filter")
-        if row_filter is not None:
-            if not row_filter.get("function") or not row_filter.get("on_columns"):
-                raise ValueError(
-                    f"Pipeline '{name}': 'row_filter' must include 'function' and a non-empty 'on_columns'."
-                )
-
-        if not p.get("reuse_bronze", False):
-            file_type = p.get("source_file_type")
-            if file_type not in VALID_FILE_TYPES:
-                raise ValueError(
-                    f"Pipeline '{name}' has invalid source_file_type '{file_type}'. "
-                    f"Must be one of: {', '.join(sorted(VALID_FILE_TYPES))}."
-                )
+    try:
+        return PipelineConfig.model_validate(config)
+    except ValidationError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -153,48 +253,13 @@ def resolve_bundle_var(bundle_path: Path, env: str, var_name: str, default: str 
 
 
 # ---------------------------------------------------------------------------
-# Step 4: preprocessing — fill optional field defaults so templates use simple
-#         attribute access without needing existence checks
+# Step 4: preprocessing — convert a raw pipeline dict to a fully-defaulted dict
+#         via the Pydantic model. Templates use plain attribute access without
+#         existence checks, so every key must be present before rendering.
 # ---------------------------------------------------------------------------
 
 def preprocess_pipeline(pipe: dict) -> dict:
-    """Return a copy of a pipeline entry with all optional fields defaulted.
-
-    Templates use plain attribute access (e.g. pipe.where_clause, pipe.csv_options.delimiter)
-    without existence checks, so every key must be present before rendering.
-    """
-    p = dict(pipe)
-    p.setdefault("reuse_bronze", False)
-    p.setdefault("bronze_columns", None)
-    p.setdefault("extra_bronze_columns", [])
-    p.setdefault("where_clause", "")
-    p.setdefault("qualify_clause", "")
-    p.setdefault("expectations", [])
-    p.setdefault("column_masks", [])
-    p.setdefault("row_filter", None)
-    p.setdefault("source_file_type", "parquet")
-
-    csv_opts = dict(p.get("csv_options") or {})
-    csv_opts.setdefault("header", True)
-    csv_opts.setdefault("delimiter", ",")
-    csv_opts.setdefault("mode", "PERMISSIVE")
-    csv_opts.setdefault("inferSchema", False)
-    csv_opts.setdefault("bad_records_path", "")
-    p["csv_options"] = csv_opts
-
-    excel_opts = dict(p.get("excel_options") or {})
-    excel_opts.setdefault("headerRows", 0)
-    excel_opts.setdefault("inferSchema", False)
-    excel_opts.setdefault("dataAddress", "")
-    excel_opts.setdefault("sheet_names", None)
-    p["excel_options"] = excel_opts
-
-    cdc = dict(p.get("cdc_conf") or {})
-    cdc.setdefault("apply_as_delete", "")
-    cdc.setdefault("apply_as_truncate", "")
-    p["cdc_conf"] = cdc
-
-    return p
+    return PipelineEntry.model_validate(pipe).model_dump()
 
 
 # ---------------------------------------------------------------------------
@@ -231,20 +296,21 @@ def make_jinja_env(templates_dir: Path) -> Environment:
 # Step 6: build shared template context from config
 # ---------------------------------------------------------------------------
 
-def build_context(config: dict, env: str, catalog: str, domain: str, audit_schema: str) -> dict:
-    """Build the Jinja2 template context dict from the parsed config.
+def build_context(config: PipelineConfig, env: str, catalog: str, domain: str, audit_schema: str) -> dict:
+    """Build the Jinja2 template context dict from the validated config model.
 
     Note on key naming: keys like 'Domain', 'GitHubRepo', 'FrameworkUsed', 'JobName',
     'PipelineName' are PascalCase because they map directly to TBLPROPERTIES key names
     in the generated SQL. The lowercase equivalents ('domain', 'job_name', etc.) are
     separate entries used by the YAML resource templates.
     """
-    pipeline_name = config["pipeline_name"]
+    cfg = config.model_dump()
+    pipeline_name = cfg["pipeline_name"]
     job_name = f"{pipeline_name}_job"
-    email_notifications = config.get("email_notifications") or []
-    email_on_pipeline_success = config.get("email_on_pipeline_success", True)
-    custom_tags = config.get("tags") or {}
-    pipelines = [preprocess_pipeline(p) for p in config["pipelines"]]
+    email_notifications = cfg["email_notifications"]
+    email_on_pipeline_success = cfg["email_on_pipeline_success"]
+    custom_tags = cfg["tags"]
+    pipelines = cfg["pipelines"]
 
     # Excel requires the pipeline to run on the PREVIEW channel (runtime with excel support).
     excel_used = any(
@@ -259,9 +325,7 @@ def build_context(config: dict, env: str, catalog: str, domain: str, audit_schem
     if email_on_pipeline_success:
         pipeline_alerts.insert(0, "on-update-success")
 
-    expectations_report_emails = (
-        config.get("expectations_report_emails") or email_notifications
-    )
+    expectations_report_emails = cfg["expectations_report_emails"] or email_notifications
 
     return {
         # SQL template variables
@@ -271,31 +335,31 @@ def build_context(config: dict, env: str, catalog: str, domain: str, audit_schem
         "catalog": catalog,
         "audit_schema": audit_schema,
         "Domain": domain,
-        "GitHubRepo": config["github_repo"],
+        "GitHubRepo": cfg["github_repo"],
         "FrameworkUsed": FRAMEWORK_TAG,
         "JobName": job_name,
         "PipelineName": pipeline_name,
         "custom_tags": custom_tags,
         # Resource template variables
         "domain": domain,
-        "github_repo": config["github_repo"],
+        "github_repo": cfg["github_repo"],
         "framework_tag": FRAMEWORK_TAG,
         "job_name": job_name,
         "env": env,
         "email_notifications": email_notifications,
-        "email_on_job_success": config.get("email_on_job_success", True),
+        "email_on_job_success": cfg["email_on_job_success"],
         "email_on_pipeline_success": email_on_pipeline_success,
         "expectations_report_emails": expectations_report_emails,
         "pipeline_alerts": pipeline_alerts,
         "excel_used": excel_used,
-        "pipeline_access_group": config.get("pipeline_access_group"),
-        "service_principal_job_runners": config.get("service_principal_job_runners") or [],
-        "enable_expectations_report": config.get("enable_expectations_report", False),
-        "trigger_downstream_job": config.get("trigger_downstream_job", False),
-        "downstream_job_id": config.get("downstream_job_id"),
-        "downstream_job_parameters": config.get("downstream_job_parameters") or {},
-        "schedule": config.get("schedule"),
-        "file_trigger": config.get("file_trigger"),
+        "pipeline_access_group": cfg["pipeline_access_group"],
+        "service_principal_job_runners": cfg["service_principal_job_runners"],
+        "enable_expectations_report": cfg["enable_expectations_report"],
+        "trigger_downstream_job": cfg["trigger_downstream_job"],
+        "downstream_job_id": cfg["downstream_job_id"],
+        "downstream_job_parameters": cfg["downstream_job_parameters"],
+        "schedule": cfg["schedule"],
+        "file_trigger": cfg["file_trigger"],
     }
 
 
@@ -413,7 +477,7 @@ Examples:
         sys.exit(1)
 
     try:
-        validate_config(config, args.env)
+        config_model = validate_config(config, args.env)
     except ValueError as exc:
         print(f"Validation error: {exc}", file=sys.stderr)
         sys.exit(1)
@@ -427,12 +491,12 @@ Examples:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    context = build_context(config, args.env, catalog, domain, audit_schema)
+    context = build_context(config_model, args.env, catalog, domain, audit_schema)
     templates_dir = Path(__file__).parent / "templates"
     output_dir = Path(args.output_dir)
 
     mode = "[dry-run] " if args.dry_run else ""
-    print(f"{mode}Generating bundle files for env='{args.env}', pipeline='{config['pipeline_name']}'...")
+    print(f"{mode}Generating bundle files for env='{args.env}', pipeline='{config_model.pipeline_name}'...")
     render_and_write(context, templates_dir, output_dir, dry_run=args.dry_run)
     print("\nDone. Next steps:")
     print("  1. Review the generated files in src/transformations/ and resources/")
