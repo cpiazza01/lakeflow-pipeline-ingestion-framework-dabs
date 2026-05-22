@@ -1,3 +1,5 @@
+USE CATALOG ${var.catalog};
+
 {% for pipe in pipelines %}
 -- ============================================================
 -- BRONZE TABLE: {{ pipe.bronze_table_name | upper }}

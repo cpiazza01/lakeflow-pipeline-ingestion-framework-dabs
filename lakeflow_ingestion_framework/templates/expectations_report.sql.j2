@@ -1,3 +1,5 @@
+USE CATALOG ${var.catalog};
+
 WITH last_update AS (
   SELECT
     origin.update_id AS update_id,
