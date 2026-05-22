@@ -8,7 +8,7 @@ All notable changes to this project will be documented here. This project adhere
 
 ---
 
-## [1.1.3] — 2026-05-22
+## [1.1.4] — 2026-05-22
 
 ### Added
 - Auto-generate changelog with git-cliff on release
